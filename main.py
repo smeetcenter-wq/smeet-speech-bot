@@ -1,7 +1,6 @@
 import os
 import asyncio
-import logging
-from enum import Enum, IntEnum, auto
+from enum import IntEnum, auto
 
 from dotenv import load_dotenv
 
@@ -17,14 +16,9 @@ from telegram.ext import (
     MessageHandler,
     ConversationHandler,
     ContextTypes,
-    PicklePersistence,
     filters,
 )
 
-# ---------- ЛОГИРОВАНИЕ ----------
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # ---------- ЗАГРУЗКА НАСТРОЕК ----------
 
@@ -63,15 +57,6 @@ class States(IntEnum):
     Q20 = auto()
     WAIT_VIDEO = auto()
     ASK_PHONE = auto()
-
-
-class SpeakerType(str, Enum):
-    ZAZH_VYZH = "zazh_vyzh"
-    POTOK_KHAOS = "potok_khaos"
-    SUKHOY_EKSPERT = "sukhoy_ekspert"
-    HARIZ_KHAOS = "hariz_khaos"
-    STABIL_REMESL = "stabil_remesl"
-    SISTEM_LIDER = "sistem_lider"
 
 
 # ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
@@ -127,18 +112,6 @@ LETTER_SCORES = {
     "d": 4,
 }
 
-VALID_LETTERS = ("a", "b", "c", "d")
-
-
-def is_valid_abcd(text: str) -> bool:
-    """
-    Проверяем, что ответ начинается на a/b/c/d.
-    """
-    if not text:
-        return False
-    t = text.strip().lower()
-    return any(t.startswith(letter) for letter in VALID_LETTERS)
-
 
 def _answer_score(q: str | None) -> int | None:
     """
@@ -154,12 +127,16 @@ def _answer_score(q: str | None) -> int | None:
     return LETTER_SCORES.get(ch)
 
 
-def detect_speaker_type_by_test(data: dict) -> tuple[SpeakerType, dict]:
+def detect_speaker_type_by_test(data: dict) -> str:
     """
     Новая диагностика по 20 вопросам.
-    Возвращает:
-    - тип спикера (SpeakerType)
-    - словарь шкал A–F
+    Возвращает один из типов:
+    - 'zazh_vyzh'      — Зажатый выживальщик
+    - 'potok_khaos'    — Потоковый хаотик
+    - 'sukhoy_ekspert' — Сухой эксперт
+    - 'hariz_khaos'    — Харизматичный хаос
+    - 'stabil_remesl'  — Стабильный ремесленник
+    - 'sistem_lider'   — Системный лидер
     """
 
     # --- 1. Собираем баллы по каждому вопросу ---
@@ -195,35 +172,33 @@ def detect_speaker_type_by_test(data: dict) -> tuple[SpeakerType, dict]:
     # F — тренировка и амбиции (Q19–Q20)
     F = avg([19, 20])
 
-    scales = {"A": A, "B": B, "C": C, "D": D, "E": E, "F": F}
-
     # --- 3. Логика определения типа ---
 
     # 1) Системный лидер: везде высокий уровень
     if all(x > 3.0 for x in [A, B, C, D, E, F]):
-        return SpeakerType.SISTEM_LIDER, scales
+        return "sistem_lider"
 
     # 2) Зажатый выживальщик: сильная тревога, слабый голос и влияние
     if A < 2.0 and C < 2.3 and E < 2.3:
-        return SpeakerType.ZAZH_VYZH, scales
+        return "zazh_vyzh"
 
     # 3) Потоковый хаотик: слабая структура, сильная импровизация и энергия
     if B < 2.3 and D > 2.7 and (C >= 2.3 or E >= 2.3):
-        return SpeakerType.POTOK_KHAOS, scales
+        return "potok_khaos"
 
     # 4) Сухой эксперт: структура есть, но слабый голос/харизма
     if B >= 2.7 and (C < 2.3 or E < 2.3):
-        return SpeakerType.SUKHOY_EKSPERT, scales
+        return "sukhoy_ekspert"
 
     # 5) Харизматичный хаос: сильная харизма/голос, слабая структура
     if (C >= 3.0 or E >= 3.0) and B < 2.5:
-        return SpeakerType.HARIZ_KHAOS, scales
+        return "hariz_khaos"
 
     # 6) Остальные — Стабильный ремесленник
-    return SpeakerType.STABIL_REMESL, scales
+    return "stabil_remesl"
 
 
-# ---------- ХЕНДЛЕРЫ / КОМАНДЫ ----------
+# ---------- ХЕНДЛЕРЫ ----------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -245,15 +220,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(intro_text, parse_mode="Markdown")
     return States.ASK_NAME
-
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Это диагностика речи от Смита.\n\n"
-        "/start — начать заново\n"
-        "/cancel — прервать диагностику\n\n"
-        "Просто следуй вопросам и нажимай на варианты ответов."
-    )
 
 
 async def save_name_and_start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -281,15 +247,9 @@ async def save_name_and_start_test(update: Update, context: ContextTypes.DEFAULT
     return States.Q1
 
 
-# --- ВОПРОСЫ Q1–Q20 (с валидацией a/b/c/d) ---
+# --- Q1–Q20 ---
 
 async def save_q1_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q1
-
     data = get_user_data(context)
     data["q1"] = update.message.text
 
@@ -308,12 +268,6 @@ async def save_q1_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q2_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q2
-
     data = get_user_data(context)
     data["q2"] = update.message.text
 
@@ -332,12 +286,6 @@ async def save_q2_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q3_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q3
-
     data = get_user_data(context)
     data["q3"] = update.message.text
 
@@ -356,12 +304,6 @@ async def save_q3_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q4_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q4
-
     data = get_user_data(context)
     data["q4"] = update.message.text
 
@@ -380,12 +322,6 @@ async def save_q4_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q5_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q5
-
     data = get_user_data(context)
     data["q5"] = update.message.text
 
@@ -404,12 +340,6 @@ async def save_q5_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q6_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q6
-
     data = get_user_data(context)
     data["q6"] = update.message.text
 
@@ -428,12 +358,6 @@ async def save_q6_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q7_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q7
-
     data = get_user_data(context)
     data["q7"] = update.message.text
 
@@ -452,12 +376,6 @@ async def save_q7_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q8_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q8
-
     data = get_user_data(context)
     data["q8"] = update.message.text
 
@@ -476,12 +394,6 @@ async def save_q8_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q9_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q9
-
     data = get_user_data(context)
     data["q9"] = update.message.text
 
@@ -500,12 +412,6 @@ async def save_q9_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q10_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q10
-
     data = get_user_data(context)
     data["q10"] = update.message.text
 
@@ -524,12 +430,6 @@ async def save_q10_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q11_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q11
-
     data = get_user_data(context)
     data["q11"] = update.message.text
 
@@ -548,12 +448,6 @@ async def save_q11_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q12_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q12
-
     data = get_user_data(context)
     data["q12"] = update.message.text
 
@@ -572,12 +466,6 @@ async def save_q12_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q13_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q13
-
     data = get_user_data(context)
     data["q13"] = update.message.text
 
@@ -596,12 +484,6 @@ async def save_q13_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q14_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q14
-
     data = get_user_data(context)
     data["q14"] = update.message.text
 
@@ -621,12 +503,6 @@ async def save_q14_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q15_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q15
-
     data = get_user_data(context)
     data["q15"] = update.message.text
 
@@ -646,12 +522,6 @@ async def save_q15_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q16_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q16
-
     data = get_user_data(context)
     data["q16"] = update.message.text
 
@@ -671,12 +541,6 @@ async def save_q16_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q17_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q17
-
     data = get_user_data(context)
     data["q17"] = update.message.text
 
@@ -695,12 +559,6 @@ async def save_q17_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q18_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q18
-
     data = get_user_data(context)
     data["q18"] = update.message.text
 
@@ -719,12 +577,6 @@ async def save_q18_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q19_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q19
-
     data = get_user_data(context)
     data["q19"] = update.message.text
 
@@ -743,12 +595,6 @@ async def save_q19_and_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def save_q20_and_ask_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_valid_abcd(update.message.text or ""):
-        await update.message.reply_text(
-            "Пожалуйста, выбери один из вариантов ответа, нажав на кнопку ниже 👇"
-        )
-        return States.Q20
-
     data = get_user_data(context)
     data["q20"] = update.message.text
 
@@ -773,7 +619,7 @@ async def save_q20_and_ask_video(update: Update, context: ContextTypes.DEFAULT_T
     return States.WAIT_VIDEO
 
 
-# ---------- ВИДЕО И РЕЗУЛЬТАТЫ ----------
+# ---------- ВИДЕО И РЕЗУЛЬТАТЫ (С ОТПРАВКОЙ АДМИНУ СРАЗУ) ----------
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = get_user_data(context)
@@ -792,12 +638,61 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data["video_file_id"] = file_id
 
     # Определяем тип спикера по новому тесту (20 вопросов)
-    speaker_type, scales = detect_speaker_type_by_test(data)
-    data["speaker_type"] = speaker_type.value
-    data["scales"] = scales
+    speaker_type = detect_speaker_type_by_test(data)
+    data["speaker_type"] = speaker_type
 
     name = get_user_name(update, context)
     name_part = f"{name}, " if name else ""
+
+    # --- СРАЗУ отправляем админу тест + видео, БЕЗ телефона ---
+    if ADMIN_CHAT_ID:
+        try:
+            user = update.effective_user
+
+            summary_lines = []
+            summary_lines.append("Новая диагностика речи 🎙")
+            summary_lines.append(f"Имя в чате: {user.full_name}")
+            saved_name = data.get("name")
+            if saved_name:
+                summary_lines.append(f"Имя, введённое пользователем: {saved_name}")
+            if user.username:
+                summary_lines.append(f"Username: @{user.username}")
+
+            speaker_type_val = data.get("speaker_type", "не определён")
+            summary_lines.append(f"Тип спикера (по тесту): {speaker_type_val}")
+
+            # Ответы на 20 вопросов
+            for i in range(1, 21):
+                qi = data.get(f"q{i}")
+                if qi:
+                    summary_lines.append(f"q{i}: {qi}")
+
+            text_to_admin = "\n".join(summary_lines)
+
+            # 1. Текстовая сводка
+            await context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=text_to_admin,
+            )
+
+            # 2. Видео участника
+            video_id = data.get("video_file_id")
+            video_type = data.get("video_type", "video")
+            if video_id:
+                if video_type == "video_note":
+                    await context.bot.send_video_note(
+                        chat_id=ADMIN_CHAT_ID,
+                        video_note=video_id,
+                    )
+                else:
+                    await context.bot.send_video(
+                        chat_id=ADMIN_CHAT_ID,
+                        video=video_id,
+                        caption="Видео участника для анализа речи 🎥",
+                    )
+
+        except Exception as e:
+            print("Ошибка отправки админу:", e)
 
     # Сообщение сразу после получения видео
     await message.reply_text(
@@ -807,30 +702,24 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "как ты обычно ощущаешь свою речь."
     )
 
-    # Небольшой прогрев перед результатами
-    await message.reply_text(
-        "А после полноценного разбора я дам тебе 2–3 конкретные рекомендации, "
-        "что докрутить в речи в первую очередь под твою ситуацию."
-    )
-
     # Задержка 15 секунд перед результатами
     await asyncio.sleep(15)
 
     # Выводим блок по типу
-    if speaker_type == SpeakerType.SISTEM_LIDER:
+    if speaker_type == "sistem_lider":
         await send_result_sistem_lider(update, context)
-    elif speaker_type == SpeakerType.POTOK_KHAOS:
+    elif speaker_type == "potok_khaos":
         await send_result_potok_khaos(update, context)
-    elif speaker_type == SpeakerType.SUKHOY_EKSPERT:
+    elif speaker_type == "sukhoy_ekspert":
         await send_result_sukhoy_ekspert(update, context)
-    elif speaker_type == SpeakerType.HARIZ_KHAOS:
+    elif speaker_type == "hariz_khaos":
         await send_result_hariz_khaos(update, context)
-    elif speaker_type == SpeakerType.STABIL_REMESL:
+    elif speaker_type == "stabil_remesl":
         await send_result_stabil_remesl(update, context)
-    else:  # SpeakerType.ZAZH_VYZH
+    else:  # 'zazh_vyzh' и всё, что не попало в другие категории
         await send_result_zazh_vyzh(update, context)
 
-    # Просим телефон + даём кнопку "Программа курса"
+    # Просим телефон + кнопки
     await message.reply_text(
         "Если хочешь прокачать речь на курсе «Говори и Убеждай», "
         "напиши, пожалуйста, свой номер телефона (в формате +7...).\n\n"
@@ -1029,7 +918,7 @@ async def send_result_sistem_lider(update: Update, context: ContextTypes.DEFAULT
     )
 
 
-# ---------- СОХРАНЕНИЕ ТЕЛЕФОНА + ЗАЯВКА АДМИНУ ----------
+# ---------- СОХРАНЕНИЕ ТЕЛЕФОНА (БЕЗ ОТПРАВКИ АДМИНУ) ----------
 
 async def save_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = get_user_data(context)
@@ -1069,63 +958,6 @@ async def save_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=ReplyKeyboardRemove(),
     )
 
-    # Отправляем данные админу, если указан ADMIN_CHAT_ID
-    if ADMIN_CHAT_ID:
-        try:
-            user = update.effective_user
-
-            # 1. Текстовая сводка
-            summary_lines = []
-            summary_lines.append("Новая заявка с диагностики 🎙")
-            summary_lines.append(f"Имя в чате: {user.full_name}")
-            saved_name = data.get("name")
-            if saved_name:
-                summary_lines.append(f"Имя, введённое пользователем: {saved_name}")
-            if user.username:
-                summary_lines.append(f"Username: @{user.username}")
-            summary_lines.append(f"Телефон: {phone}")
-
-            speaker_type = data.get("speaker_type", "не определён")
-            summary_lines.append(f"Тип спикера (по тесту): {speaker_type}")
-
-            scales = data.get("scales", {})
-            if scales:
-                summary_lines.append(
-                    "Шкалы A–F: " +
-                    ", ".join(f"{k}={v:.2f}" for k, v in scales.items())
-                )
-
-            for i in range(1, 21):
-                qi = data.get(f"q{i}")
-                if qi:
-                    summary_lines.append(f"q{i}: {qi}")
-
-            text_to_admin = "\n".join(summary_lines)
-
-            await context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=text_to_admin,
-            )
-
-            # 2. Видео участника (если есть)
-            video_id = data.get("video_file_id")
-            video_type = data.get("video_type", "video")
-            if video_id:
-                if video_type == "video_note":
-                    await context.bot.send_video_note(
-                        chat_id=ADMIN_CHAT_ID,
-                        video_note=video_id,
-                    )
-                else:
-                    await context.bot.send_video(
-                        chat_id=ADMIN_CHAT_ID,
-                        video=video_id,
-                        caption="Видео участника для анализа речи 🎥",
-                    )
-
-        except Exception:
-            logger.exception("Ошибка отправки данных админу")
-
     return ConversationHandler.END
 
 
@@ -1141,17 +973,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not BOT_TOKEN:
-        raise RuntimeError("Не найден BOT_TOKEN в .env")
+        raise RuntimeError("Не найден BOT_TOKEN в переменных окружения")
 
-    # persistence: чтобы user_data и состояния не терялись при перезапуске
-    persistence = PicklePersistence(filepath="bot_data.pkl")
-
-    app = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .persistence(persistence)
-        .build()
-    )
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -1233,8 +1057,6 @@ def main():
     )
 
     app.add_handler(conv)
-    app.add_handler(CommandHandler("help", help_cmd))
-
     app.run_polling()
 
 
